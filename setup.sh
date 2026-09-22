@@ -33,13 +33,26 @@ for t in lpadmin lpstat lpinfo lp; do
     command -v "$t" >/dev/null || die "Missing '$t'. Install the CUPS client tools."
 done
 
+# CUPS translates its output, so anything parsed below must run in the C
+# locale. Defined after the check above, which would otherwise see the
+# function instead of the binary.
+lpstat() { LC_ALL=C command lpstat "$@"; }
+
 # --- 1. scheduler -----------------------------------------------------------
 
-if ! lpstat -r 2>/dev/null | grep -q 'is running'; then
+# Not `lpstat -r`: it exits 0 whether or not the scheduler answers, so its
+# translated one-line message is the only signal. `lpstat -c` makes a real IPP
+# request and exits non-zero when cupsd is unreachable.
+cupsd_running() { lpstat -c >/dev/null 2>&1; }
+
+if ! cupsd_running; then
     info "Starting cupsd..."
     sudo systemctl enable --now cups.service cups.socket
-    sleep 2
-    lpstat -r 2>/dev/null | grep -q 'is running' || die "Could not start cupsd."
+    for _ in $(seq 1 10); do
+        cupsd_running && break
+        sleep 1
+    done
+    cupsd_running || die "Could not start cupsd."
 fi
 ok "cupsd is running"
 
@@ -62,7 +75,7 @@ ok "Queue configured"
 
 # Without a default destination, bare `lp file` fails and some desktop
 # applications show no printer at all.
-if ! lpstat -d 2>/dev/null | grep -q ': '; then
+if ! lpstat -d 2>/dev/null | grep -q 'destination:'; then
     as_admin lpadmin -d "$QUEUE"
     ok "Set '$QUEUE' as the default destination"
 fi
